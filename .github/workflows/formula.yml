@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
 
     env:
       HOMEBREW_GITHUB_ACTIONS: 1
@@ -39,8 +39,12 @@ jobs:
         run: |
           for f in Formula/*.rb; do
             name=prettysmartdev/tap/$(basename "$f" .rb)
-            brew style -v "$name"
-            brew audit --strict --online --except=version "$name"
-            brew install -v "$name"
-            brew test -v "$name"
+            if [ "$name" = prettysmartdev/tap/awman ]; then
+              bash scripts/test_awman_formula.sh
+            else
+              brew style -v "$name"
+              brew audit --strict --online --except=version "$name"
+              brew install -v "$name"
+              brew test -v "$name"
+            fi
           done
