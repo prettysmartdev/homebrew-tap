@@ -1,0 +1,98 @@
+name: Update awman formula
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: update-awman-formula
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+      base: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Remember tap revision
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Check updater rules
+        run: node --test scripts/update_awman.test.mjs
+      - name: Verify latest release and update formula
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/update_awman.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.update.outputs.changed == 'true'
+        with:
+          name: verified-awman-formula
+          path: |
+            Formula/awman.rb
+            SHA256SUMS
+          if-no-files-found: error
+
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+    env:
+      HOMEBREW_GITHUB_ACTIONS: 1
+      HOMEBREW_NO_ANALYTICS: 1
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+      HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-awman-formula
+      - uses: Homebrew/actions/setup-homebrew@ceec4e8419bb3c97ce96e9dda7738499ed5f869d # 2026.11.14.1
+      - name: Tap repository
+        run: |
+          mkdir -p "$(brew --repository)/Library/Taps/prettysmartdev"
+          ln -s "$PWD" "$(brew --repository)/Library/Taps/prettysmartdev/homebrew-tap"
+      - name: Install and test the exact binary
+        shell: bash
+        run: bash scripts/test_awman_formula.sh
+
+  publish:
+    needs: [prepare, test]
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-awman-formula
+      - name: Commit only if the reviewed tap revision is still current
+        env:
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$BASE_SHA" || {
+            echo 'Tap main moved; the next scheduled run will recheck the release' >&2
+            exit 1
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/awman.rb
+          git commit -m 'Update awman Homebrew formula'
+          git push origin HEAD:main
